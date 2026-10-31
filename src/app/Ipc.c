@@ -33,9 +33,11 @@
 // forward declaration: Ipc__listen() probes for a live owner before unlinking
 bool Ipc__connect(const char* path, int* out_fd);
 
-// Per-camera socket path for this user. Prefers $XDG_RUNTIME_DIR (tmpfs, 0700,
-// cleaned on logout) and falls back to a uid-scoped directory under /tmp.
-bool Ipc__sockPath(char* dst, u32 dst_sz, const Camera* cam) {
+// A per-camera path in this user's runtime directory. Prefers $XDG_RUNTIME_DIR
+// (tmpfs, 0700, cleaned on logout) and falls back to a uid-scoped directory
+// under /tmp. Keyed on the node index only, because sun_path is short (~108
+// bytes) and the full camera slug would not reliably fit.
+bool Ipc__runtimePath(char* dst, u32 dst_sz, const Camera* cam, const char* ext) {
   const char* runtime = getenv("XDG_RUNTIME_DIR");
   char dir[MAX_PATH];
   if (NULL != runtime && 0 != runtime[0]) {
@@ -46,9 +48,19 @@ bool Ipc__sockPath(char* dst, u32 dst_sz, const Camera* cam) {
   if (!File__mkdirp(dir)) {
     return false;
   }
-  // sun_path is short (~108 bytes), so key on the node index only
-  int n = snprintf(dst, (size_t)dst_sz, "%s/video%lu.sock", dir, (unsigned long)cam->index);
+  int n = snprintf(dst, (size_t)dst_sz, "%s/video%lu.%s", dir, (unsigned long)cam->index, ext);
   return n > 0 && (u32)n < dst_sz;
+}
+
+// Per-camera socket path for this user. Prefers $XDG_RUNTIME_DIR (tmpfs, 0700,
+// cleaned on logout) and falls back to a uid-scoped directory under /tmp.
+bool Ipc__sockPath(char* dst, u32 dst_sz, const Camera* cam) {
+  return Ipc__runtimePath(dst, dst_sz, cam, "sock");
+}
+
+// Per-camera log path, where a spawned daemon's stderr is sent
+bool Ipc__logPath(char* dst, u32 dst_sz, const Camera* cam) {
+  return Ipc__runtimePath(dst, dst_sz, cam, "log");
 }
 
 // Bind and listen, clearing a stale socket first

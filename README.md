@@ -22,7 +22,7 @@ camera_look(camera_id?, image?, describe?, describe_prompt?, ocr_query?, file?, 
    already running behind it.
 4. The frame is written to disk and the path is returned. If asked, the agent
    also gets a prose description, OCR text regions, and/or the image itself.
-5. **Two minutes after the last call**, the window deletes every frame it wrote
+5. **One minute after the last call**, the window deletes every frame it wrote
    that was not marked `persist`, and exits 0.
 
 The frame the agent receives is byte-identical to the one you watched freeze.
@@ -65,9 +65,11 @@ Register it with your MCP client (`~/.pi/agent/mcp.json`, or the equivalent):
 | `describe` | bool | `false` | Run local vision over the frame. Implied by `describe_prompt`/`ocr_query`. |
 | `describe_prompt` | string | general description | The question to ask the VLM. |
 | `ocr_query` | string | `""` | Keep only OCR regions containing this substring, case-insensitively. |
+| `decide` | string | `""` | Ask the decision model a typed question. See below. |
+| `decide_type` | enum | `noul` | `noul` (yes/no), `choice`, or `score`. |
+| `decide_options` | string[] | — | Options for `choice` (≥2) or ordered levels for `score` (2–10). |
 | `file` | string | transient path | Absolute path to write the frame to. Parents created. |
 | `persist` | bool | `false` | Keep the frame; otherwise it is swept after the idle timeout. |
-| `quality` | int | `90` | JPEG quality, 1–100. |
 
 Returns a text summary plus `structuredContent`:
 
@@ -83,6 +85,9 @@ Returns a text summary plus `structuredContent`:
   "ocr": {"ok": true, "matched": 3, "total": 9,
           "regions": [{"x":145,"y":248,"w":133,"h":18,"text":"COUNTY CLERK","score":0.978}],
           "error": ""},
+  "decide": {"ok": true, "question": "Is a printed paper document clearly visible?",
+             "answer": {"type": "noul", "noul": 0.9437016591687146},
+             "summary": "yes with probability 0.944", "error": ""},
   "cameras": [{"camera_id":"0__uvc_camera_046d_0821__6a7559a0","index":0,
                "device":"/dev/video0","card":"UVC Camera (046d:0821)","serial":"6A7559A0"}]
 }
@@ -90,6 +95,56 @@ Returns a text summary plus `structuredContent`:
 
 There is deliberately **no second tool for listing cameras**: every result
 carries the full `cameras` array, so the agent always knows its options.
+
+### The three analyses
+
+They are independent, and each costs something different. Ask for only what you
+need.
+
+**`decide`** — a [System One](https://systemonemodels.org) decision model
+(Jev-shaped, h2o-lightning-4b on `:1237`). It returns **calibrated
+probabilities, not prose**, in ~100 ms, which makes it the right tool for
+gating a polling loop. Three question shapes:
+
+```jsonc
+// noul (default): yes/no as a single 0-1 probability
+{"decide": "Is someone looking at the camera?"}
+// -> {"type":"noul","noul":0.944}
+
+// choice: one of your options, with a probability for every one
+{"decide": "What surface is the subject on?", "decide_type": "choice",
+ "decide_options": ["A wooden desk", "The floor", "Held in a hand", "Cannot tell"]}
+// -> {"type":"choice","choice":"a_wooden_desk",
+//     "probabilities":{"a_wooden_desk":0.94,"the_floor":0.02,...},"confidence":0.92}
+
+// score: an ordered scale, answered as a probability-weighted mean
+{"decide": "How legible is the text?", "decide_type": "score",
+ "decide_options": ["Unreadable", "Partially readable", "Clearly readable"]}
+// -> {"type":"score","score":1.30,"legend":{...},"probabilities":{...},"confidence":0.48}
+```
+
+Option ids are slugified from your labels. The backend's answer object is
+returned **verbatim** under `structuredContent.decide.answer` — the calibrated
+probabilities are the whole point, so nothing is re-serialized through our own
+types.
+
+**`describe_prompt`** — a prose answer from the VLM (`:1246`). Slower
+(~0.5–2 s) and free-form; it can hallucinate.
+
+**`ocr_query`** — text regions with pixel bounding boxes from OCR (`:1239`).
+Fast. `ocr_query` filters by substring; omit it to get every region.
+
+`describe_prompt` and `ocr_query` both imply `describe: true`. `decide` does
+not, so polling with `decide` alone never pays for the VLM.
+
+A polling loop reduces to:
+
+```
+every N seconds:
+  r = camera_look(decide: "Is this a photo-worthy moment?")
+  if r.decide.answer.noul >= 0.8:
+      camera_look(persist: true, describe_prompt: "Name this moment in 4 words")
+```
 
 ### Camera ids
 
@@ -146,6 +201,11 @@ IPC is newline-delimited JSON over a per-camera Unix socket at
 `$XDG_RUNTIME_DIR/mcp-camera/videoN.sock`. Frames do not cross the socket — the
 file on disk is the single source of truth for both processes.
 
+The daemon's own stderr goes to `$XDG_RUNTIME_DIR/mcp-camera/videoN.log`, not to
+`camera_mcp`'s stderr. A detached child holding the parent's stderr *pipe* open
+would block an MCP host that reads it, long after `camera_mcp` exited. Look in
+that log when the window misbehaves.
+
 ### Notable implementation details
 
 - **Native V4L2**, no ffmpeg. The ioctl order `S_FMT → REQBUFS → QUERYBUF +
@@ -169,12 +229,13 @@ Both are optional; a failure in one never hides the other's answer.
 
 | Variable | Default | Used for |
 |---|---|---|
+| `CAMERA_JEV_URL` | `http://127.0.0.1:1237` | `POST /v1/systemone` → typed decision |
 | `CAMERA_OCR_URL` | `http://127.0.0.1:1239` | `POST /ocr` → text regions |
 | `CAMERA_VLM_URL` | `http://127.0.0.1:1246` | `POST /v1/chat/completions` → prose |
 
 These are the same services and request shapes `mcp-vision` uses, so they share
-one model process. `VISION_OCR_URL` / `VISION_LIQUID_URL` are honoured as
-fallbacks.
+one model process. `VISION_H2O_URL` / `VISION_OCR_URL` / `VISION_LIQUID_URL`
+are honoured as fallbacks.
 
 > OCR and VLM text is **untrusted content read off a camera**. It is reported as
 > data and must never be treated as instructions. The tool result says so too.
@@ -184,11 +245,12 @@ fallbacks.
 | Variable | Default | Effect |
 |---|---|---|
 | `CAMERA_DIR` | `/tmp/camera` | Where transient frames go |
+| `CAMERA_JEV_URL` | `http://127.0.0.1:1237` | Decision backend |
 | `CAMERA_OCR_URL` | `http://127.0.0.1:1239` | OCR backend |
 | `CAMERA_VLM_URL` | `http://127.0.0.1:1246` | VLM backend |
 | `CAMERA_PREVIEW_BIN` | beside `camera_mcp` | Path to `camera_preview` |
 | `CAMERA_SFX` | built-in click | A 16-bit PCM WAV for the shutter |
-| `CAMERA_IDLE_MS` | `120000` | Retire the window this long after the last call |
+| `CAMERA_IDLE_MS` | `60000` | Retire the window this long after the last call |
 | `CAMERA_PREVIEW_X` / `_Y` | bottom-right | Window position |
 | `CAMERA_PREVIEW_ONTOP` | on | Set `0` to not keep the window above others |
 | `CAMERA_PREVIEW_SKIP_TASKBAR` | off | Set `1` to hide it from the task list |

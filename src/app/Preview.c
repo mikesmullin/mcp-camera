@@ -126,16 +126,33 @@ bool Preview__spawn(const Camera* cam) {
     LOG_ERRORF("fork() failed while starting camera_preview");
     return false;
   }
+  char log[MAX_PATH];
+  bool have_log = Ipc__logPath(log, (u32)sizeof(log), cam);
+
   if (0 == pid) {
     // child: detach from this session so the daemon survives the MCP client
     (void)setsid();
-    // stdin/stdout are the MCP transport; the daemon must not inherit them
+    // stdin/stdout are the MCP transport; the daemon must not inherit them.
     int devnull = open("/dev/null", O_RDWR);
     if (devnull >= 0) {
       (void)dup2(devnull, STDIN_FILENO);
       (void)dup2(devnull, STDOUT_FILENO);
       if (devnull > STDERR_FILENO) {
         (void)close(devnull);
+      }
+    }
+    // stderr must be redirected too, and not merely for tidiness: a detached
+    // daemon holding the parent's stderr PIPE open keeps that pipe unclosed
+    // for its whole lifetime, so an MCP host that reads our stderr would block
+    // long after camera_mcp exited. Give the daemon its own log file instead.
+    int fd = have_log ? open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600) : -1;
+    if (fd < 0) {
+      fd = open("/dev/null", O_WRONLY);
+    }
+    if (fd >= 0) {
+      (void)dup2(fd, STDERR_FILENO);
+      if (fd > STDERR_FILENO) {
+        (void)close(fd);
       }
     }
     char* argv[] = {bin, (char*)"--camera", idx, NULL};
@@ -149,18 +166,24 @@ bool Preview__spawn(const Camera* cam) {
   u64 deadline = Time__now() + PREVIEW_START_TIMEOUT_MS;
   for (u32 i = 0; i < MAX_LOOP_ITER; i++) {
     if (Preview__ready(cam)) {
-      LOG_INFOF("camera_preview ready for %s", cam->name);
+      LOG_INFOF("camera_preview ready for %s (log: %s)", cam->name, have_log ? log : "none");
       return true;
     }
     // if the child already died, stop waiting on it
     int status = 0;
     pid_t r = waitpid(pid, &status, WNOHANG);
     if (r == pid) {
-      LOG_ERRORF("camera_preview exited during startup (status %d)", status);
+      LOG_ERRORF(
+          "camera_preview exited during startup (status %d); see %s",
+          status,
+          have_log ? log : "its output");
       return false;
     }
     if (Time__now() > deadline) {
-      LOG_ERRORF("camera_preview did not become ready within %d ms", PREVIEW_START_TIMEOUT_MS);
+      LOG_ERRORF(
+          "camera_preview did not become ready within %d ms; see %s",
+          PREVIEW_START_TIMEOUT_MS,
+          have_log ? log : "its output");
       return false;
     }
     Time__sleep_ms(50);

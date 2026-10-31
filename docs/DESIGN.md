@@ -63,6 +63,8 @@ they are byte-identical.
 | `persist` | Defaults to `false`; sticky per path once set. |
 | Tool count | One (`camera_look`). Enumeration is folded into every result rather than given its own tool. |
 | `describe` | Asks **both** backends: the VLM for prose, OCR for text regions. They answer different questions. |
+| `decide` | A separate, much cheaper call to the System One decision model. Deliberately does *not* imply `describe`, so polling with `decide` alone never pays for the VLM. |
+| JPEG quality | Fixed at 90, not a tool argument. It is a storage knob with no bearing on what the agent can see, and 90 is already past the point where it affects OCR or the VLM. The IPC field remains for `ipc_client`. |
 
 ## Things that are load-bearing
 
@@ -96,6 +98,13 @@ and the agent stop seeing the same picture. Verified by encoding synthetic
 colour bars and decoding them with ffmpeg: white comes back `ffffff`, not
 `ebebeb`.
 
+**The decision answer is passed through verbatim.** `Vision__decide()` captures
+the raw span of `answers.decision` out of the backend's response body and
+splices it into `structuredContent` with `JsonW__kraw`. A System One model's
+entire value is its calibrated probability distribution; re-serializing that
+through our own structs would make us a lossy middleman for the one thing the
+caller actually wants. The same raw-span trick is used for JSON-RPC `params`.
+
 **`describe_prompt` is not the OCR filter.** An earlier revision passed the
 prompt to both the VLM and the OCR query. A natural-language question is never
 a substring of text on a page, so every region was silently discarded. OCR
@@ -117,8 +126,9 @@ first after a sokol upgrade.
 - JPEG encoder round-trip: synthetic colour bars decode through ffmpeg to the
   exact expected RGB (`ffffff ffff00 00ffff 00ff01 ff00fe fd0000 0000fe 000000`).
 - MCP handshake, `tools/list`, `tools/call` over stdio.
-- A real frame captured, described by the VLM at :1246, and OCR'd at :1239
-  with correct bounding boxes.
+- A real frame captured, described by the VLM at :1246, OCR'd at :1239 with
+  correct bounding boxes, and judged by the decision model at :1237 in all
+  three question shapes (~100 ms each).
 - `image: true` returns base64 byte-identical to the file on disk.
 - The window places bottom-right of the primary XRandR output, sets
   `_NET_WM_STATE_ABOVE`, `_NET_WM_WINDOW_TYPE_UTILITY` and `_NET_WM_ICON`.
@@ -134,6 +144,10 @@ first after a sokol upgrade.
 - **Frame-rate control.** The driver's default (30fps at 640x480) is used.
 - **Windows/macOS.** `V4l2.c` and `Gui__place()` are Linux-only. Everything
   else is portable; sokol already covers the other platforms' window layer.
-- **`image_decide`.** `mcp-vision` has it (H2O at :1237); `camera_look` does
-  not, because the agent can make that judgment from `describe` output. Add a
-  third backend to `Vision.c` if a probability is ever wanted directly.
+- **Jev's Box question type** (1.14, opt-in): returns one bounding box in the
+  image as 0–1 fractions. `Vision.c` implements noul, choice and score only.
+  OCR already covers "where is this text", which is the common case here.
+- **Multiple decision questions per call.** Jev accepts a map of questions and
+  answers them in one parallel pass; `camera_look` sends exactly one, named
+  `decision`. Batching would mean a nested object argument, which is a worse
+  trade for an agent-facing tool than calling twice.

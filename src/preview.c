@@ -43,7 +43,7 @@
 #include "app/Gui.c"  // IWYU pragma: keep
 // clang-format on
 
-#define PREVIEW_IDLE_MS (120000)  // retire 2 minutes after the last grab
+#define PREVIEW_IDLE_MS (60000)  // retire 1 minute after the last grab
 #define PREVIEW_CAPTURE_TIMEOUT_MS (2000)
 // A UVC camera's first frames are dark and noisy while auto-exposure and
 // auto-white-balance settle. They are shown in the window (so the user can see
