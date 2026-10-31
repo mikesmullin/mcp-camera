@@ -1,0 +1,4 @@
+[submodule "vendor/sokol"]
+	path = vendor/sokol
+	url = https://github.com/mikesmullin/sokol.git
+	branch = mikes-version

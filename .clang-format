@@ -1,0 +1,15 @@
+{
+	BasedOnStyle: Google,
+	ColumnLimit: 100,
+	AlignAfterOpenBracket: AlwaysBreak,
+	AllowAllArgumentsOnNextLine: false,
+	BinPackParameters: false,
+	BinPackArguments: false,
+	DerivePointerAlignment: false,
+	ReflowComments: false,
+	AlignTrailingComments: false,
+	PointerAlignment: Left,
+	AllowShortIfStatementsOnASingleLine: Never,
+	AllowShortBlocksOnASingleLine: Never,
+	AllowShortFunctionsOnASingleLine: None,
+}

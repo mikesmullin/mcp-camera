@@ -1,0 +1,10 @@
+--std=c99
+-D_DEFAULT_SOURCE
+-D_POSIX_C_SOURCE=200809L
+-ffp-contract=off
+-Wall
+-Wextra
+-Wno-pragma-once-outside-header
+-Wno-missing-field-initializers
+-Werror=incompatible-pointer-types
+-Werror=implicit-function-declaration

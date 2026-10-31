@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=mcp-camera
+GenericName=Agent Camera Preview
+Comment=Live webcam preview for the camera_look MCP tool
+# A Linux ELF binary carries no embedded icon; launchers read Icon= from here,
+# while the running window's icon comes from assets/icon.h via sokol_app.
+Icon=mcp-camera
+Exec=camera_preview --camera 0
+Terminal=false
+Categories=Utility;Graphics;Video;
+Keywords=camera;webcam;mcp;agent;
+NoDisplay=true
